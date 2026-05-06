@@ -111,6 +111,12 @@ pub fn frame_alloc() -> Option<FrameTracker> {
         .map(FrameTracker::new)
 }
 
+/// tell if the physical memory is still sufficient
+pub fn is_frame_available() -> bool {
+    let fa = FRAME_ALLOCATOR.exclusive_access();
+    !(fa.current == fa.end && fa.recycled.is_empty())
+}
+
 /// Deallocate a physical page frame with a given ppn
 pub fn frame_dealloc(ppn: PhysPageNum) {
     FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
