@@ -47,6 +47,82 @@ impl MemorySet {
             areas: Vec::new(),
         }
     }
+    /// Unmap the virtual pages in [start_va, end_va). Returns true on success,
+    /// false if any page in the range is not mapped.
+    pub fn unmap_range(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let mut vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        while vpn < end_vpn {
+            // find the area containing vpn
+            let opt_idx = self.areas.iter().position(|area| {
+                (area.vpn_range.get_start() <= vpn && vpn < area.vpn_range.get_end())
+                    || (vpn == area.vpn_range.get_start() && vpn == area.vpn_range.get_start())
+            });
+            if opt_idx.is_none() {
+                return false;
+            }
+            let idx = opt_idx.unwrap();
+            // operate on the area via index; clone needed info to avoid borrow conflicts when inserting
+            let old_start = self.areas[idx].vpn_range.get_start();
+            let old_end = self.areas[idx].vpn_range.get_end();
+            // unmap this single page
+            self.areas[idx].unmap_one(&mut self.page_table, vpn);
+            // three cases: remove first page, last page, or middle page (split)
+            match (
+                vpn == old_start,
+                vpn.0 + 1 == old_end.0,
+                vpn == old_start && vpn == old_end,
+            ) {
+                (true, false, false) | (true, true, false) => {
+                    // remove first page: advance start by one
+                    // corner case: This map area has just 2 VPN
+                    self.areas[idx].vpn_range =
+                        VPNRange::new(VirtPageNum(old_start.0 + 1), old_end);
+                }
+                (false, true, false) => {
+                    // remove last page: decrease end by one
+                    self.areas[idx].vpn_range = VPNRange::new(old_start, VirtPageNum(old_end.0 - 1))
+                }
+                (false, false, false) => {
+                    // split area: left part keeps [old_start, vpn), right part becomes [vpn+1, old_end)
+                    let right_start = VirtPageNum(vpn.0 + 1);
+                    let right_end = old_end;
+                    // collect frames for right part
+                    let mut right_frames = BTreeMap::new();
+                    let keys_to_move: Vec<VirtPageNum> = self.areas[idx]
+                        .data_frames
+                        .keys()
+                        .cloned()
+                        .filter(|k| k.0 >= right_start.0)
+                        .collect();
+                    for k in keys_to_move.iter() {
+                        if let Some(ft) = self.areas[idx].data_frames.remove(k) {
+                            right_frames.insert(*k, ft);
+                        }
+                    }
+                    // left area shrinks its end to vpn
+                    self.areas[idx].vpn_range = VPNRange::new(old_start, VirtPageNum(vpn.0));
+                    // create right area and insert after current index
+                    let right_area = MapArea {
+                        vpn_range: VPNRange::new(right_start, right_end),
+                        data_frames: right_frames,
+                        map_type: self.areas[idx].map_type,
+                        map_perm: self.areas[idx].map_perm,
+                    };
+                    // insert the right area into the areas vec right after idx
+                    let insert_pos = idx + 1;
+                    self.areas.insert(insert_pos, right_area);
+                }
+                (_, _, true) => {
+                    // only one page in this area
+                    self.areas.remove(idx);
+                }
+            }
+            // move to next vpn (original numbering)
+            vpn.0 += 1;
+        }
+        true
+    }
     /// Get the page table token
     pub fn token(&self) -> usize {
         self.page_table.token()
