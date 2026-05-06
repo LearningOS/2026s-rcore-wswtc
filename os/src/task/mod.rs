@@ -54,6 +54,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_syscalls_count: [0; 500],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -168,4 +169,24 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Count the usage times of system calls in the current task
+/// and return the specific usage times at the same time
+pub fn count_syscalls(syscall_id: usize) -> usize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].task_syscalls_count[syscall_id] += 1;
+    let ret = inner.tasks[current].task_syscalls_count[syscall_id];
+    drop(inner);
+    ret
+}
+
+/// Get the usage times of system calls in the current task
+/// for the use of sys_trace
+pub fn get_syscalls_count(syscall_id: usize) -> isize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let ret = inner.tasks[inner.current_task].task_syscalls_count[syscall_id] as isize;
+    drop(inner);
+    ret
 }
