@@ -50,6 +50,15 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
         trap_handler as usize,
     );
     (*new_task_trap_cx).x[10] = arg;
+
+    // 通过读取available里的资源，为新建线程初始化资源分配表
+    let cur_id_alloc_need: alloc::collections::btree_map::BTreeMap<usize, usize> =
+        process_inner.available.keys().map(|k| (*k, 0)).collect();
+    process_inner
+        .allocation
+        .insert(new_task_tid, cur_id_alloc_need.clone());
+    process_inner.need.insert(new_task_tid, cur_id_alloc_need);
+
     new_task_tid as isize
 }
 /// get current thread id syscall

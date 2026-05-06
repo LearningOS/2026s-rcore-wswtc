@@ -9,6 +9,8 @@ use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::btree_set::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -49,6 +51,13 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// for banker's algorithm
+    pub available: BTreeMap<usize, usize>,
+    // 虽然感觉实际运行中need只会有一个格子是1，其他都是0，但还是按照语义先把他实现再说
+    pub need: BTreeMap<usize, BTreeMap<usize, usize>>,
+    pub allocation: BTreeMap<usize, BTreeMap<usize, usize>>,
+    pub is_deadlock_detect_enabled: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +128,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    available: BTreeMap::new(),
+                    need: BTreeMap::new(),
+                    allocation: BTreeMap::new(),
+                    is_deadlock_detect_enabled: false,
                 })
             },
         });
@@ -130,6 +143,7 @@ impl ProcessControlBlock {
         ));
         // prepare trap_cx of main thread
         let task_inner = task.inner_exclusive_access();
+        let tid = task_inner.res.as_ref().unwrap().tid;
         let trap_cx = task_inner.get_trap_cx();
         let ustack_top = task_inner.res.as_ref().unwrap().ustack_top();
         let kstack_top = task.kstack.get_top();
@@ -144,6 +158,12 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+
+        // 初始化主线程在银行家算法中的行（tid = 0）！！！这里是个坑!
+        process_inner.allocation.insert(tid, BTreeMap::new());
+        process_inner.need.insert(tid, BTreeMap::new());
+        debug!("tid: {}", tid);
+
         drop(process_inner);
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
@@ -245,6 +265,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    available: BTreeMap::new(),
+                    need: BTreeMap::new(),
+                    allocation: BTreeMap::new(),
+                    is_deadlock_detect_enabled: false,
                 })
             },
         });
@@ -264,9 +288,16 @@ impl ProcessControlBlock {
             // but mention that we allocate a new kstack here
             false,
         ));
+        let tid = task.inner_exclusive_access().res.as_ref().unwrap().tid;
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+
+        // fork 出来的主线程同样是 tid = 0，初始化银行家算法行!!!这里是个坑！需要自己查询tid
+        child_inner.allocation.insert(tid, BTreeMap::new());
+        child_inner.need.insert(tid, BTreeMap::new());
+        debug!("tid: {}", tid);
+
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
@@ -281,5 +312,38 @@ impl ProcessControlBlock {
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+}
+
+/// detect if the process is in deadlock state according to banker's algorithm
+pub fn is_deadlock(
+    inner: &RefMut<'_, ProcessControlBlockInner>,
+    cur_tid: usize,
+    req_id: usize,
+    req_amount: usize,
+) -> bool {
+    let mut need = inner.need.clone();
+    let mut work = inner.available.clone();
+    let alloc = &inner.allocation;
+
+    // 模拟资源分配
+    *need.get_mut(&cur_tid).unwrap().get_mut(&req_id).unwrap() += req_amount;
+
+    let mut fin = BTreeSet::new();
+
+    while let Some((tid, _)) = need.iter().find(|(tid, v)| {
+        fin.contains(*tid) == false
+            && v.iter()
+                .all(|(id, amount)| *amount <= *work.get(id).unwrap())
+    }) {
+        fin.insert(*tid);
+        work.iter_mut()
+            .for_each(|(id, amount)| *amount += *alloc.get(tid).unwrap().get(id).unwrap());
+    }
+
+    if fin.len() == need.len() {
+        false
+    } else {
+        true
     }
 }
