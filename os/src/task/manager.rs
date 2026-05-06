@@ -22,8 +22,21 @@ impl TaskManager {
         self.ready_queue.push_back(task);
     }
     /// Take a process out of the ready queue
+    // pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
+    //     self.ready_queue.pop_front()
+    // }
+
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let que = &mut self.ready_queue;
+        let mut min_stride_index = 0;
+        for i in 0..que.len() {
+            let current_stride = que[i].inner_exclusive_access().stride;
+            let min_stride = que[min_stride_index].inner_exclusive_access().stride;
+            if current_stride < min_stride {
+                min_stride_index = i;
+            }
+        }
+        que.remove(min_stride_index)
     }
 }
 

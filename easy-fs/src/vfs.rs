@@ -183,4 +183,106 @@ impl Inode {
         });
         block_cache_sync_all();
     }
+
+    /// Create a hard link from old_name to new_name under current inode
+    pub fn linkat(&self, old_name: &str, new_name: &str) {
+        let (old_inode_id, tail_offset) = self.read_disk_inode(|root_disk_inode| {
+            (
+                self.find_inode_id(old_name, root_disk_inode).unwrap(),
+                root_disk_inode.size as usize,
+            )
+        });
+        let new_dir_entry = DirEntry::new(new_name, old_inode_id);
+        self.write_at(tail_offset, new_dir_entry.as_bytes());
+    }
+    /// Get the inode id of current inode
+    pub fn get_inode_id(&self) -> u32 {
+        let fs = self.fs.lock();
+        let (block_id, block_offset) = (self.block_id, self.block_offset);
+        // 我这里就硬算
+        fs.get_disk_inode_id(block_id as u32, block_offset)
+    }
+    /// Check if current inode is a directory
+    pub fn is_dir(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_dir())
+    }
+    /// Check if current inode is a file
+    pub fn is_file(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_file())
+    }
+    /// Get the link count of current inode
+    pub fn get_nlink(&self, ino: u32) -> u32 {
+        let _fs = self.fs.lock();
+        let mut cnt = 0;
+        self.read_disk_inode(|root_disk_inode| {
+            let file_count = (root_disk_inode.size as usize) / DIRENT_SZ;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    root_disk_inode.read_at(
+                        i * DIRENT_SZ,
+                        dirent.as_bytes_mut(),
+                        &self.block_device,
+                    ),
+                    DIRENT_SZ,
+                );
+                if dirent.inode_id() == ino {
+                    cnt += 1;
+                }
+            }
+        });
+        cnt
+    }
+    /// Remove the link from name to inode under current inode
+    pub fn unlinkat(&self, name: &str) {
+        // 删除对应的目录项，如果发现链接到该文件的目录项为0，则需要删除文件
+
+        let ino = self
+            .read_disk_inode(|root_disk_node| self.find_inode_id(name, root_disk_node).unwrap());
+
+        let mut cnt = 0;
+        let mut file_index = 0;
+        self.read_disk_inode(|root_disk_inode| {
+            let file_count = (root_disk_inode.size as usize) / DIRENT_SZ;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    root_disk_inode.read_at(
+                        i * DIRENT_SZ,
+                        dirent.as_bytes_mut(),
+                        &self.block_device,
+                    ),
+                    DIRENT_SZ,
+                );
+                if dirent.inode_id() == ino {
+                    cnt += 1;
+                }
+                if dirent.name() == name {
+                    file_index = i;
+                }
+            }
+        });
+        if cnt > 1 {
+            // 说明还有其他链接，直接删除目录项
+            let dirent = DirEntry::empty();
+            self.write_at(file_index * DIRENT_SZ, dirent.as_bytes());
+        } else {
+            // 说明没有其他链接了，需要删除文件
+            let (block_id, block_offset) = {
+                // 保证下面不再持有fs的锁，避免死锁
+                let fs = self.fs.lock();
+                fs.get_disk_inode_pos(ino)
+            };
+            let inode = Arc::new(Self::new(
+                block_id,
+                block_offset,
+                self.fs.clone(),
+                self.block_device.clone(),
+            ));
+            inode.clear();
+            //删除目录项
+            let dirent = DirEntry::empty();
+            self.write_at(file_index * DIRENT_SZ, dirent.as_bytes());
+        }
+    }
 }

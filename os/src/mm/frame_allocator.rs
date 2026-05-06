@@ -116,6 +116,12 @@ pub fn frame_dealloc(ppn: PhysPageNum) {
     FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
 }
 
+/// Check if there is any physical page frame available for allocation
+pub fn is_frame_available() -> bool {
+    let fa = FRAME_ALLOCATOR.exclusive_access();
+    fa.current < fa.end || fa.recycled.len() > 0
+}
+
 #[allow(unused)]
 /// a simple test for frame allocator
 pub fn frame_allocator_test() {

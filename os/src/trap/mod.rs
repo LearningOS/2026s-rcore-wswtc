@@ -35,11 +35,8 @@ pub fn init() {
 }
 
 fn set_kernel_trap_entry() {
-    extern "C" {
-        fn __trap_from_kernel();
-    }
     unsafe {
-        stvec::write(__trap_from_kernel as usize, TrapMode::Direct);
+        stvec::write(trap_from_kernel as usize, TrapMode::Direct);
     }
 }
 

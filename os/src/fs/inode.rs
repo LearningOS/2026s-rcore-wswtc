@@ -5,6 +5,8 @@
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
 use super::File;
+use super::Stat;
+use super::StatMode;
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -69,6 +71,15 @@ pub fn list_apps() {
         println!("{}", app);
     }
     println!("**************/");
+}
+
+/// Create a hard link from old_name to new_name
+pub fn linkat(old_name: &str, new_name: &str) {
+    ROOT_INODE.linkat(old_name, new_name);
+}
+/// Remove the link to the file name, and if the link count of the file is 0, the file will be deleted
+pub fn unlinkat(name: &str) {
+    ROOT_INODE.unlinkat(name);
 }
 
 bitflags! {
@@ -155,5 +166,25 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn stat(&self) -> Stat {
+        // ino: 复用方法find_inode_id
+        // mode: 查找到文件的inode之后，直接读type字段
+        // nlink: 遍历根目录，查找与文件同名的目录项数目
+        let inode = &self.inner.exclusive_access().inode;
+        let ino = inode.get_inode_id();
+        let mode = match (inode.is_dir(), inode.is_file()) {
+            (true, false) => StatMode::DIR,
+            (false, true) => StatMode::FILE,
+            _ => unreachable!(),
+        };
+        let nlink = ROOT_INODE.get_nlink(ino);
+        Stat {
+            dev: 0,
+            ino: ino as u64,
+            mode,
+            nlink,
+            pad: [0; 7],
+        }
     }
 }
